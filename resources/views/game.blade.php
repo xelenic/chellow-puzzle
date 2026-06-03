@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=1080">
+<meta name="csrf-token" content="{{ csrf_token() }}">
 <title>Chellow Puzzle</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -324,6 +325,35 @@ html,body{
     box-shadow:0 1px 0 #015f94, 0 4px 14px rgba(14,165,233,.3);
 }
 
+/* ── Splash form fields ── */
+.splash-form{
+    display:flex;flex-direction:column;gap:20px;width:640px;
+}
+.splash-field{display:flex;flex-direction:column;gap:10px;}
+.splash-lbl{
+    font-size:26px;font-weight:700;color:#0369a1;
+    letter-spacing:2px;text-transform:uppercase;
+    display:flex;align-items:center;gap:10px;
+}
+.splash-lbl i{font-size:22px;color:#0ea5e9;}
+.splash-input{
+    width:100%;height:88px;padding:0 30px;
+    border-radius:18px;border:2px solid rgba(14,165,233,.3);
+    background:#fff;
+    font-family:'Patrick Hand',system-ui,sans-serif;
+    font-size:32px;color:#0c4a6e;
+    outline:none;transition:border-color .2s,box-shadow .2s;
+}
+.splash-input:focus{
+    border-color:#0ea5e9;
+    box-shadow:0 0 0 5px rgba(14,165,233,.12);
+}
+.splash-input::placeholder{color:rgba(3,105,161,.3);}
+.splash-error{
+    font-size:22px;color:#ef4444;font-weight:600;
+    min-height:28px;text-align:center;
+}
+
 /* ── Fixed top bar ── */
 .topbar{
     position:fixed;top:0;left:0;width:1080px;height:90px;z-index:700;
@@ -487,6 +517,21 @@ html,body{
 <!-- ── Splash / Start Screen ── -->
 <div id="splash">
     <img src="{{ asset('logo.png') }}" class="splash-logo" alt="Chellow Puzzle">
+
+    <div class="splash-form">
+        <div class="splash-field">
+            <div class="splash-lbl"><i class="fa-solid fa-user"></i> Name</div>
+            <input class="splash-input" id="player-name" type="text"
+                   placeholder="Enter your name" maxlength="100" autocomplete="off">
+        </div>
+        <div class="splash-field">
+            <div class="splash-lbl"><i class="fa-solid fa-phone"></i> Phone</div>
+            <input class="splash-input" id="player-phone" type="tel"
+                   placeholder="Enter your phone number" maxlength="30" autocomplete="off">
+        </div>
+        <div class="splash-error" id="splash-error"></div>
+    </div>
+
     <button class="splash-btn" onclick="G.startGame()" id="splash-btn">
         <i class="fa-solid fa-play" style="margin-right:18px;font-size:32px;"></i>Start Game
     </button>
@@ -641,12 +686,27 @@ const G = (() => {
     let placed     = new Set();
     let pieceOrder = [];
     let imgURL     = null;
-    let puzzleImg  = null; // loaded from puzzle.png
+    let puzzleImg  = null;
     let moves      = 0;
     let tick       = null;
     let running    = false;
     let timeLeft   = 0;
-    const TIME_LIMIT = { 3: 60, 4: 60, 5: 60 }; // 1 minute for all difficulties
+    let playerId   = null; // set after /player/start succeeds
+    const TIME_LIMIT = { 3: 60, 4: 60, 5: 60 };
+
+    /* ── CSRF / API helper ──────────────────────────────── */
+    const CSRF = () => document.querySelector('meta[name="csrf-token"]')?.content ?? '';
+
+    async function apiPost(url, data) {
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': CSRF() },
+                body: JSON.stringify(data),
+            });
+            return await res.json();
+        } catch(e) { return null; }
+    }
 
     // drag
     let dVal = null, dOrig = null, dClone = null, dFromSlot = null;
@@ -986,6 +1046,8 @@ const G = (() => {
         sfxWin.currentTime = 0;
         sfxWin.play().catch(()=>{});
         startFireworks();
+        // Save result
+        if(playerId) apiPost('/player/result', { player_id: playerId, result: 'win', moves, time_taken: elapsed, difficulty: N });
     }
 
     /* ── Public API ────────────────────────────────────── */
@@ -1019,6 +1081,9 @@ const G = (() => {
         sfxGameOver.currentTime = 0;
         sfxGameOver.play().catch(()=>{});
         document.getElementById('gameover').classList.add('show');
+        // Save result
+        const elapsed = TIME_LIMIT[N] - timeLeft;
+        if(playerId) apiPost('/player/result', { player_id: playerId, result: 'timeout', moves, time_taken: elapsed, difficulty: N });
     }
 
     function restartFromGameOver() {
@@ -1029,12 +1094,30 @@ const G = (() => {
         bgm.play().catch(()=>{});
     }
 
-    function startGame(){
+    async function startGame(){
+        const nameVal  = document.getElementById('player-name').value.trim();
+        const phoneVal = document.getElementById('player-phone').value.trim();
+        const errEl    = document.getElementById('splash-error');
+
+        // Validate
+        if(!nameVal || !phoneVal){
+            errEl.textContent = !nameVal ? 'Please enter your name.' : 'Please enter your phone number.';
+            return;
+        }
+        errEl.textContent = '';
+
+        // Disable button to prevent double-tap
+        const btn = document.getElementById('splash-btn');
+        btn.disabled = true;
+
+        // Save player to DB
+        const res = await apiPost('/player/start', { name: nameVal, phone: phoneVal, difficulty: N });
+        playerId = res?.player_id ?? null;
+
         // Fade out splash
         const sp = document.getElementById('splash');
         sp.classList.add('hide');
-        setTimeout(() => { sp.style.display = 'none'; showRemember(); }, 550);
-        // Switch music
+        setTimeout(() => { sp.style.display = 'none'; btn.disabled = false; showRemember(); }, 550);
         menuMusic.pause(); menuMusic.currentTime = 0;
         bgm.play().catch(()=>{});
     }
@@ -1068,6 +1151,11 @@ const G = (() => {
         document.getElementById('gameover').classList.remove('show');
         bgm.pause(); bgm.currentTime = 0;
         newGame();
+        // Reset player state
+        playerId = null;
+        document.getElementById('player-name').value  = '';
+        document.getElementById('player-phone').value = '';
+        document.getElementById('splash-error').textContent = '';
         // Return to splash
         const sp = document.getElementById('splash');
         sp.style.display = '';
